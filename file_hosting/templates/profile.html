@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Профиль · {{ config.SITE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-5">
+        <h1 class="h3 mb-4">Мой профиль</h1>
+        
+        <form method="post" action="{{ url_for('profile') }}">
+          <div class="mb-4">
+            <h5 class="mb-3">Основная информация</h5>
+            
+            <div class="mb-3">
+              <label for="username" class="form-label">Имя пользователя</label>
+              <input type="text" class="form-control" id="username" name="username" value="{{ current_user.username }}" required>
+            </div>
+            
+            <div class="mb-3">
+              <label for="email" class="form-label">Email</label>
+              <input type="email" class="form-control" id="email" name="email" value="{{ current_user.email }}" required>
+            </div>
+            
+            <div class="mb-3">
+              <label class="form-label">Дата регистрации</label>
+              <input type="text" class="form-control" value="{{ current_user.created_at.strftime('%d %b %Y') }}" disabled>
+            </div>
+          </div>
+
+          <hr class="my-4">
+
+          <div class="mb-4">
+            <h5 class="mb-3">Изменить пароль</h5>
+            <p class="text-muted small mb-3">Оставьте поля пустыми, если не хотите менять пароль.</p>
+            
+            <div class="mb-3">
+              <label for="current_password" class="form-label">Текущий пароль</label>
+              <input type="password" class="form-control" id="current_password" name="current_password" placeholder="Введите текущий пароль">
+            </div>
+            
+            <div class="mb-3">
+              <label for="new_password" class="form-label">Новый пароль</label>
+              <input type="password" class="form-control" id="new_password" name="new_password" placeholder="Минимум 6 символов">
+            </div>
+            
+            <div class="mb-3">
+              <label for="confirm_password" class="form-label">Подтвердите новый пароль</label>
+              <input type="password" class="form-control" id="confirm_password" name="confirm_password" placeholder="Повторите новый пароль">
+            </div>
+          </div>
+
+          <div class="d-flex gap-3">
+            <button class="btn btn-primary px-4" type="submit">Сохранить изменения</button>
+            <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Отмена</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+

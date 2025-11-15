@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}Мои файлы · {{ config.SITE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+  <div>
+    <h1 class="h3 mb-1">Моя библиотека</h1>
+    <p class="text-muted mb-0">
+      {% if pagination %}
+        Показано {{ pagination.items|length }} из {{ pagination.total }} файлов
+      {% else %}
+        У вас сохранено {{ files|length }} файлов
+      {% endif %}
+      · Общий размер {{ (total_size / (1024 * 1024)) | round(2) }} МБ
+    </p>
+  </div>
+  <a class="btn btn-primary" href="{{ url_for('upload') }}"><span class="me-2">+</span>Загрузить</a>
+</div>
+
+<!-- Поиск и фильтры -->
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <form method="get" action="{{ url_for('dashboard') }}" class="row g-3">
+      <div class="col-md-4">
+        <label for="search" class="form-label small">Поиск по имени</label>
+        <input type="text" class="form-control" id="search" name="search" value="{{ search_query }}" placeholder="Введите название файла...">
+      </div>
+      <div class="col-md-3">
+        <label for="type" class="form-label small">Тип файла</label>
+        <select class="form-select" id="type" name="type">
+          <option value="">Все типы</option>
+          <option value="image" {% if file_type == 'image' %}selected{% endif %}>Изображения</option>
+          <option value="video" {% if file_type == 'video' %}selected{% endif %}>Видео</option>
+          <option value="audio" {% if file_type == 'audio' %}selected{% endif %}>Аудио</option>
+          <option value="application/pdf" {% if file_type == 'application/pdf' %}selected{% endif %}>PDF</option>
+          <option value="text" {% if file_type == 'text' %}selected{% endif %}>Текстовые</option>
+          <option value="application/zip" {% if file_type == 'application/zip' %}selected{% endif %}>Архивы</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label for="sort" class="form-label small">Сортировка</label>
+        <select class="form-select" id="sort" name="sort">
+          <option value="date_desc" {% if sort_by == 'date_desc' %}selected{% endif %}>Дата (новые)</option>
+          <option value="date_asc" {% if sort_by == 'date_asc' %}selected{% endif %}>Дата (старые)</option>
+          <option value="name_asc" {% if sort_by == 'name_asc' %}selected{% endif %}>Имя (А-Я)</option>
+          <option value="name_desc" {% if sort_by == 'name_desc' %}selected{% endif %}>Имя (Я-А)</option>
+          <option value="size_asc" {% if sort_by == 'size_asc' %}selected{% endif %}>Размер (маленькие)</option>
+          <option value="size_desc" {% if sort_by == 'size_desc' %}selected{% endif %}>Размер (большие)</option>
+        </select>
+      </div>
+      <div class="col-md-2 d-flex align-items-end">
+        <button type="submit" class="btn btn-primary w-100">Применить</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if files %}
+  <div class="table-responsive shadow-sm rounded-4">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th scope="col">Имя</th>
+          <th scope="col">Загружено</th>
+          <th scope="col">Размер</th>
+          <th scope="col">Скачиваний</th>
+          <th scope="col" class="text-end">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for file in files %}
+          <tr>
+            <td>
+              <div class="fw-semibold">{{ file.original_name }}</div>
+              {% if file.description %}
+                <div class="text-muted small">{{ file.description }}</div>
+              {% endif %}
+            </td>
+            <td>{{ file.uploaded_at.strftime("%d %b %Y %H:%M") }}</td>
+            <td>{{ (file.file_size / 1024) | round(1) }} KB</td>
+            <td>{{ file.download_count }}</td>
+            <td class="text-end">
+              <div class="btn-group btn-group-sm" role="group">
+                <a class="btn btn-outline-primary" href="{{ url_for('file_detail', file_id=file.id) }}">Детали</a>
+                <a class="btn btn-primary" href="{{ url_for('download', file_id=file.id) }}">Скачать</a>
+                <form class="d-inline" action="{{ url_for('delete', file_id=file.id) }}" method="post" onsubmit="return confirm('Удалить {{ file.original_name }}?');">
+                  <button class="btn btn-outline-danger" type="submit">Удалить</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Пагинация -->
+  {% if pagination and pagination.pages > 1 %}
+    <nav aria-label="Навигация по страницам" class="mt-4">
+      <ul class="pagination justify-content-center">
+        <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+          <a class="page-link" href="{{ url_for('dashboard', page=pagination.prev_num, search=search_query, type=file_type, sort=sort_by) if pagination.has_prev else '#' }}">Предыдущая</a>
+        </li>
+        {% for page_num in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+          {% if page_num %}
+            {% if page_num == pagination.page %}
+              <li class="page-item active"><span class="page-link">{{ page_num }}</span></li>
+            {% else %}
+              <li class="page-item"><a class="page-link" href="{{ url_for('dashboard', page=page_num, search=search_query, type=file_type, sort=sort_by) }}">{{ page_num }}</a></li>
+            {% endif %}
+          {% else %}
+            <li class="page-item disabled"><span class="page-link">…</span></li>
+          {% endif %}
+        {% endfor %}
+        <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+          <a class="page-link" href="{{ url_for('dashboard', page=pagination.next_num, search=search_query, type=file_type, sort=sort_by) if pagination.has_next else '#' }}">Следующая</a>
+        </li>
+      </ul>
+    </nav>
+  {% endif %}
+{% else %}
+  <div class="text-center py-5 border rounded-4">
+    <p class="lead mb-1">Вы еще ничего не загрузили.</p>
+    <p class="text-muted mb-4">Загрузите свой первый файл, чтобы увидеть его здесь.</p>
+    <a class="btn btn-primary" href="{{ url_for('upload') }}">Загрузить файл</a>
+  </div>
+{% endif %}
+{% endblock %}
+
