@@ -21,6 +21,7 @@ from flask_login import (
     login_user,
     logout_user,
 )
+from sqlalchemy import or_
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
@@ -62,8 +63,32 @@ def _configure_extensions(app: Flask) -> None:
 
     @app.context_processor
     def inject_utilities():
+        def preview_icon(mime_type: str | None) -> str:
+            if not mime_type:
+                return "description"
+            if mime_type.startswith("image/"):
+                return "image"
+            if mime_type.startswith("video/"):
+                return "movie"
+            if mime_type.startswith("audio/"):
+                return "music_note"
+            if mime_type == "application/pdf":
+                return "picture_as_pdf"
+            if mime_type.startswith("text/"):
+                return "description"
+            if "zip" in mime_type or "compressed" in mime_type:
+                return "archive"
+            if "spreadsheet" in mime_type or "excel" in mime_type:
+                return "table"
+            if "presentation" in mime_type:
+                return "slideshow"
+            if "word" in mime_type or "document" in mime_type:
+                return "article"
+            return "insert_drive_file"
+
         return {
             "current_year": lambda: datetime.utcnow().year,
+            "preview_icon": preview_icon,
         }
 
 
@@ -164,6 +189,19 @@ def _register_routes(app: Flask) -> None:
                 query = query.filter(File.mime_type.like("audio/%"))
             elif file_type == "text":
                 query = query.filter(File.mime_type.like("text/%"))
+            elif file_type == "application/zip":
+                archive_conditions = [
+                    File.mime_type.ilike("%zip%"),
+                    File.mime_type.ilike("%rar%"),
+                    File.mime_type.ilike("%7z%"),
+                    File.mime_type.ilike("%compressed%"),
+                    File.mime_type.ilike("%octet-stream%"),
+                    File.original_name.ilike("%.zip"),
+                    File.original_name.ilike("%.rar"),
+                    File.original_name.ilike("%.7z"),
+                    File.original_name.ilike("%.tar"),
+                ]
+                query = query.filter(or_(*archive_conditions))
             else:
                 query = query.filter(File.mime_type.like(f"%{file_type}%"))
 
@@ -257,6 +295,14 @@ def _register_routes(app: Flask) -> None:
             if failed_uploads > 0:
                 flash(f"Не удалось загрузить файлов: {failed_uploads}.", "warning")
 
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return {
+                    "status": "ok",
+                    "redirect": url_for("dashboard"),
+                    "successful": successful_uploads,
+                    "failed": failed_uploads,
+                }, 200
+
             return redirect(url_for("dashboard"))
 
         return render_template("upload.html")
@@ -286,6 +332,23 @@ def _register_routes(app: Flask) -> None:
             download_name=file_record.original_name,
         )
 
+    @app.route("/preview/<int:file_id>")
+    @login_required
+    def preview_file(file_id: int):
+        file_record = File.query.get_or_404(file_id)
+        if file_record.owner != current_user:
+            abort(403)
+
+        if not file_record.mime_type or not file_record.mime_type.startswith("image/"):
+            abort(404)
+
+        return send_from_directory(
+            directory=Config.UPLOAD_DIR,
+            path=file_record.filename,
+            as_attachment=False,
+            mimetype=file_record.mime_type,
+        )
+
     @app.route("/delete/<int:file_id>", methods=["POST"])
     @login_required
     def delete(file_id: int):
@@ -293,13 +356,58 @@ def _register_routes(app: Flask) -> None:
         if file_record.owner != current_user:
             abort(403)
 
-        file_path = Config.UPLOAD_DIR / file_record.filename
-        if file_path.exists():
-            file_path.unlink()
-
+        _remove_file_from_storage(file_record)
         db.session.delete(file_record)
         db.session.commit()
         flash("Файл удален.", "info")
+        return redirect(url_for("dashboard"))
+
+    @app.route("/files/bulk-delete", methods=["POST"])
+    @login_required
+    def bulk_delete():
+        action = request.form.get("action", "delete_selected")
+        files_to_delete: list[File] = []
+
+        if action == "delete_all":
+            files_to_delete = current_user.files.order_by(File.uploaded_at.desc()).all()
+            if not files_to_delete:
+                flash("Нет файлов для удаления.", "info")
+                return redirect(url_for("dashboard"))
+        else:
+            selected_ids = request.form.getlist("file_ids")
+            if not selected_ids:
+                flash("Выберите хотя бы один файл.", "warning")
+                return redirect(url_for("dashboard"))
+
+            try:
+                selected_ids = [int(file_id) for file_id in selected_ids]
+            except ValueError:
+                flash("Некорректный список файлов.", "danger")
+                return redirect(url_for("dashboard"))
+
+            files_to_delete = (
+                File.query.filter(File.id.in_(selected_ids), File.user_id == current_user.id)
+                .order_by(File.uploaded_at.desc())
+                .all()
+            )
+
+            if not files_to_delete:
+                flash("Не удалось найти выбранные файлы.", "warning")
+                return redirect(url_for("dashboard"))
+
+        deleted_count = 0
+        for file_record in files_to_delete:
+            _remove_file_from_storage(file_record)
+            db.session.delete(file_record)
+            deleted_count += 1
+
+        db.session.commit()
+
+        if action == "delete_all":
+            flash(f"Удалены все файлы ({deleted_count}).", "info")
+        else:
+            flash(f"Удалены выбранные файлы ({deleted_count}).", "info")
+
         return redirect(url_for("dashboard"))
 
     @app.route("/file/<int:file_id>/share", methods=["POST"])
@@ -432,6 +540,12 @@ def _register_cli(app: Flask) -> None:
 
 def _allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in Config.ALLOWED_EXTENSIONS
+
+
+def _remove_file_from_storage(file_record: File) -> None:
+    file_path = Config.UPLOAD_DIR / file_record.filename
+    if file_path.exists():
+        file_path.unlink()
 
 
 app = create_app()
