@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 
 from flask import (
@@ -21,6 +22,7 @@ from flask_login import (
     login_user,
     logout_user,
 )
+from sqlalchemy import inspect, or_, text
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
@@ -38,12 +40,37 @@ def create_app() -> Flask:
     _register_error_handlers(app)
     _register_cli(app)
 
-    # Initialize database
+
     with app.app_context():
         db.create_all()
-        # Ensure per-user storage directories exist for existing users
-        for user in User.query.all():
-            user.storage_path.mkdir(parents=True, exist_ok=True)
+        # Автоматическая миграция: добавление поля is_admin если его нет
+        try:
+            inspector = inspect(db.engine)
+            # Проверяем, существует ли таблица users
+            if 'users' in inspector.get_table_names():
+                columns = [col['name'] for col in inspector.get_columns('users')]
+                
+                if 'is_admin' not in columns:
+                    # Добавляем колонку is_admin
+                    with db.engine.connect() as conn:
+                        conn.execute(text('ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0'))
+                        conn.commit()
+                    # Устанавливаем is_admin=False для всех существующих пользователей
+                    db.session.execute(
+                        text("UPDATE users SET is_admin = 0 WHERE is_admin IS NULL")
+                    )
+                    db.session.commit()
+        except Exception as e:
+            # Игнорируем ошибки миграции - возможно таблица еще не создана
+            pass
+        
+        # Создаем директории для пользователей
+        try:
+            for user in User.query.all():
+                user.storage_path.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # Игнорируем ошибки при первом запуске, когда еще нет пользователей
+            pass
 
     return app
 
@@ -62,8 +89,32 @@ def _configure_extensions(app: Flask) -> None:
 
     @app.context_processor
     def inject_utilities():
+        def preview_icon(mime_type: str | None) -> str:
+            if not mime_type:
+                return "description"
+            if mime_type.startswith("image/"):
+                return "image"
+            if mime_type.startswith("video/"):
+                return "movie"
+            if mime_type.startswith("audio/"):
+                return "music_note"
+            if mime_type == "application/pdf":
+                return "picture_as_pdf"
+            if mime_type.startswith("text/"):
+                return "description"
+            if "zip" in mime_type or "compressed" in mime_type:
+                return "archive"
+            if "spreadsheet" in mime_type or "excel" in mime_type:
+                return "table"
+            if "presentation" in mime_type:
+                return "slideshow"
+            if "word" in mime_type or "document" in mime_type:
+                return "article"
+            return "insert_drive_file"
+
         return {
             "current_year": lambda: datetime.utcnow().year,
+            "preview_icon": preview_icon,
         }
 
 
@@ -164,6 +215,19 @@ def _register_routes(app: Flask) -> None:
                 query = query.filter(File.mime_type.like("audio/%"))
             elif file_type == "text":
                 query = query.filter(File.mime_type.like("text/%"))
+            elif file_type == "application/zip":
+                archive_conditions = [
+                    File.mime_type.ilike("%zip%"),
+                    File.mime_type.ilike("%rar%"),
+                    File.mime_type.ilike("%7z%"),
+                    File.mime_type.ilike("%compressed%"),
+                    File.mime_type.ilike("%octet-stream%"),
+                    File.original_name.ilike("%.zip"),
+                    File.original_name.ilike("%.rar"),
+                    File.original_name.ilike("%.7z"),
+                    File.original_name.ilike("%.tar"),
+                ]
+                query = query.filter(or_(*archive_conditions))
             else:
                 query = query.filter(File.mime_type.like(f"%{file_type}%"))
 
@@ -257,6 +321,14 @@ def _register_routes(app: Flask) -> None:
             if failed_uploads > 0:
                 flash(f"Не удалось загрузить файлов: {failed_uploads}.", "warning")
 
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return {
+                    "status": "ok",
+                    "redirect": url_for("dashboard"),
+                    "successful": successful_uploads,
+                    "failed": failed_uploads,
+                }, 200
+
             return redirect(url_for("dashboard"))
 
         return render_template("upload.html")
@@ -286,6 +358,23 @@ def _register_routes(app: Flask) -> None:
             download_name=file_record.original_name,
         )
 
+    @app.route("/preview/<int:file_id>")
+    @login_required
+    def preview_file(file_id: int):
+        file_record = File.query.get_or_404(file_id)
+        if file_record.owner != current_user:
+            abort(403)
+
+        if not file_record.mime_type or not file_record.mime_type.startswith("image/"):
+            abort(404)
+
+        return send_from_directory(
+            directory=Config.UPLOAD_DIR,
+            path=file_record.filename,
+            as_attachment=False,
+            mimetype=file_record.mime_type,
+        )
+
     @app.route("/delete/<int:file_id>", methods=["POST"])
     @login_required
     def delete(file_id: int):
@@ -293,13 +382,58 @@ def _register_routes(app: Flask) -> None:
         if file_record.owner != current_user:
             abort(403)
 
-        file_path = Config.UPLOAD_DIR / file_record.filename
-        if file_path.exists():
-            file_path.unlink()
-
+        _remove_file_from_storage(file_record)
         db.session.delete(file_record)
         db.session.commit()
         flash("Файл удален.", "info")
+        return redirect(url_for("dashboard"))
+
+    @app.route("/files/bulk-delete", methods=["POST"])
+    @login_required
+    def bulk_delete():
+        action = request.form.get("action", "delete_selected")
+        files_to_delete: list[File] = []
+
+        if action == "delete_all":
+            files_to_delete = current_user.files.order_by(File.uploaded_at.desc()).all()
+            if not files_to_delete:
+                flash("Нет файлов для удаления.", "info")
+                return redirect(url_for("dashboard"))
+        else:
+            selected_ids = request.form.getlist("file_ids")
+            if not selected_ids:
+                flash("Выберите хотя бы один файл.", "warning")
+                return redirect(url_for("dashboard"))
+
+            try:
+                selected_ids = [int(file_id) for file_id in selected_ids]
+            except ValueError:
+                flash("Некорректный список файлов.", "danger")
+                return redirect(url_for("dashboard"))
+
+            files_to_delete = (
+                File.query.filter(File.id.in_(selected_ids), File.user_id == current_user.id)
+                .order_by(File.uploaded_at.desc())
+                .all()
+            )
+
+            if not files_to_delete:
+                flash("Не удалось найти выбранные файлы.", "warning")
+                return redirect(url_for("dashboard"))
+
+        deleted_count = 0
+        for file_record in files_to_delete:
+            _remove_file_from_storage(file_record)
+            db.session.delete(file_record)
+            deleted_count += 1
+
+        db.session.commit()
+
+        if action == "delete_all":
+            flash(f"Удалены все файлы ({deleted_count}).", "info")
+        else:
+            flash(f"Удалены выбранные файлы ({deleted_count}).", "info")
+
         return redirect(url_for("dashboard"))
 
     @app.route("/file/<int:file_id>/share", methods=["POST"])
@@ -388,6 +522,199 @@ def _register_routes(app: Flask) -> None:
 
         return render_template("profile.html")
 
+    # Admin routes
+    @app.route("/admin")
+    @login_required
+    def admin_dashboard():
+        if not current_user.is_admin:
+            abort(403)
+        
+        # Статистика
+        total_users = User.query.count()
+        total_files = File.query.count()
+        total_size = db.session.query(db.func.sum(File.file_size)).scalar() or 0
+        admin_count = User.query.filter_by(is_admin=True).count()
+        
+        # Последние пользователи
+        recent_users = User.query.order_by(User.created_at.desc()).limit(5).all()
+        
+        # Последние файлы
+        recent_files = File.query.order_by(File.uploaded_at.desc()).limit(10).all()
+        
+        # Статистика по типам файлов
+        file_types_stats = (
+            db.session.query(
+                db.func.count(File.id).label('count'),
+                db.func.sum(File.file_size).label('total_size'),
+                File.mime_type
+            )
+            .group_by(File.mime_type)
+            .order_by(db.func.count(File.id).desc())
+            .limit(10)
+            .all()
+        )
+        
+        return render_template(
+            "admin/dashboard.html",
+            total_users=total_users,
+            total_files=total_files,
+            total_size=total_size,
+            admin_count=admin_count,
+            recent_users=recent_users,
+            recent_files=recent_files,
+            file_types_stats=file_types_stats,
+        )
+
+    @app.route("/admin/users")
+    @login_required
+    def admin_users():
+        if not current_user.is_admin:
+            abort(403)
+        
+        search_query = request.args.get("search", "").strip()
+        page = request.args.get("page", 1, type=int)
+        per_page = 20
+        
+        query = User.query
+        
+        if search_query:
+            query = query.filter(
+                or_(
+                    User.username.ilike(f"%{search_query}%"),
+                    User.email.ilike(f"%{search_query}%")
+                )
+            )
+        
+        query = query.order_by(User.created_at.desc())
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        users = pagination.items
+        
+        # Добавляем статистику для каждого пользователя
+        for user in users:
+            user.file_count = user.files.count()
+            user.total_size = db.session.query(db.func.sum(File.file_size)).filter(
+                File.user_id == user.id
+            ).scalar() or 0
+        
+        return render_template(
+            "admin/users.html",
+            users=users,
+            pagination=pagination,
+            search_query=search_query,
+        )
+
+    @app.route("/admin/users/<int:user_id>/toggle-admin", methods=["POST"])
+    @login_required
+    def admin_toggle_admin(user_id: int):
+        if not current_user.is_admin:
+            abort(403)
+        
+        user = User.query.get_or_404(user_id)
+        if user.id == current_user.id:
+            flash("Вы не можете изменить свои права администратора.", "warning")
+            return redirect(url_for("admin_users"))
+        
+        user.is_admin = not user.is_admin
+        db.session.commit()
+        
+        status = "назначен администратором" if user.is_admin else "лишен прав администратора"
+        flash(f"Пользователь {user.username} {status}.", "success")
+        return redirect(url_for("admin_users"))
+
+    @app.route("/admin/users/<int:user_id>/delete", methods=["POST"])
+    @login_required
+    def admin_delete_user(user_id: int):
+        if not current_user.is_admin:
+            abort(403)
+        
+        user = User.query.get_or_404(user_id)
+        if user.id == current_user.id:
+            flash("Вы не можете удалить свой аккаунт.", "warning")
+            return redirect(url_for("admin_users"))
+        
+        username = user.username
+        # Удаление всех файлов пользователя
+        for file_record in user.files:
+            _remove_file_from_storage(file_record)
+        
+        db.session.delete(user)
+        db.session.commit()
+        
+        flash(f"Пользователь {username} и все его файлы удалены.", "success")
+        return redirect(url_for("admin_users"))
+
+    @app.route("/admin/files")
+    @login_required
+    def admin_files():
+        if not current_user.is_admin:
+            abort(403)
+        
+        search_query = request.args.get("search", "").strip()
+        file_type = request.args.get("type", "")
+        user_id = request.args.get("user_id", type=int)
+        sort_by = request.args.get("sort", "date_desc")
+        page = request.args.get("page", 1, type=int)
+        per_page = 50
+        
+        query = File.query
+        
+        if search_query:
+            query = query.filter(File.original_name.ilike(f"%{search_query}%"))
+        
+        if file_type:
+            if file_type == "image":
+                query = query.filter(File.mime_type.like("image/%"))
+            elif file_type == "video":
+                query = query.filter(File.mime_type.like("video/%"))
+            elif file_type == "audio":
+                query = query.filter(File.mime_type.like("audio/%"))
+            else:
+                query = query.filter(File.mime_type.like(f"%{file_type}%"))
+        
+        if user_id:
+            query = query.filter(File.user_id == user_id)
+        
+        if sort_by == "name_asc":
+            query = query.order_by(File.original_name.asc())
+        elif sort_by == "name_desc":
+            query = query.order_by(File.original_name.desc())
+        elif sort_by == "size_asc":
+            query = query.order_by(File.file_size.asc())
+        elif sort_by == "size_desc":
+            query = query.order_by(File.file_size.desc())
+        elif sort_by == "date_asc":
+            query = query.order_by(File.uploaded_at.asc())
+        else:
+            query = query.order_by(File.uploaded_at.desc())
+        
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        files = pagination.items
+        
+        return render_template(
+            "admin/files.html",
+            files=files,
+            pagination=pagination,
+            search_query=search_query,
+            file_type=file_type,
+            user_id=user_id,
+            sort_by=sort_by,
+        )
+
+    @app.route("/admin/files/<int:file_id>/delete", methods=["POST"])
+    @login_required
+    def admin_delete_file(file_id: int):
+        if not current_user.is_admin:
+            abort(403)
+        
+        file_record = File.query.get_or_404(file_id)
+        original_name = file_record.original_name
+        _remove_file_from_storage(file_record)
+        db.session.delete(file_record)
+        db.session.commit()
+        
+        flash(f"Файл {original_name} удален.", "success")
+        return redirect(url_for("admin_files"))
+
 
 def _register_error_handlers(app: Flask) -> None:
     @app.errorhandler(403)
@@ -422,16 +749,22 @@ def _register_cli(app: Flask) -> None:
             print("Пользователь с таким именем или email уже существует.")
             return
 
-        user = User(username=username, email=email)
+        user = User(username=username, email=email, is_admin=True)
         user.set_password(password)
         db.session.add(user)
         db.session.commit()
         user.storage_path.mkdir(parents=True, exist_ok=True)
-        print(f"Пользователь {username} создан.")
+        print(f"Администратор {username} создан.")
 
 
 def _allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in Config.ALLOWED_EXTENSIONS
+
+
+def _remove_file_from_storage(file_record: File) -> None:
+    file_path = Config.UPLOAD_DIR / file_record.filename
+    if file_path.exists():
+        file_path.unlink()
 
 
 app = create_app()
