@@ -60,6 +60,35 @@ def create_app() -> Flask:
                         text("UPDATE users SET is_admin = 0 WHERE is_admin IS NULL")
                     )
                     db.session.commit()
+                
+                if 'is_super_admin' not in columns:
+                    # Добавляем колонку is_super_admin
+                    with db.engine.connect() as conn:
+                        conn.execute(text('ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN DEFAULT 0'))
+                        conn.commit()
+                    # Устанавливаем is_super_admin=False для всех существующих пользователей
+                    db.session.execute(
+                        text("UPDATE users SET is_super_admin = 0 WHERE is_super_admin IS NULL")
+                    )
+                    db.session.commit()
+                
+                # Миграция для таблицы files
+                if 'files' in inspector.get_table_names():
+                    file_columns = [col['name'] for col in inspector.get_columns('files')]
+                    
+                    if 'is_deleted' not in file_columns:
+                        with db.engine.connect() as conn:
+                            conn.execute(text('ALTER TABLE files ADD COLUMN is_deleted BOOLEAN DEFAULT 0'))
+                            conn.commit()
+                        db.session.execute(
+                            text("UPDATE files SET is_deleted = 0 WHERE is_deleted IS NULL")
+                        )
+                        db.session.commit()
+                    
+                    if 'deleted_at' not in file_columns:
+                        with db.engine.connect() as conn:
+                            conn.execute(text('ALTER TABLE files ADD COLUMN deleted_at DATETIME'))
+                            conn.commit()
         except Exception as e:
             # Игнорируем ошибки миграции - возможно таблица еще не создана
             pass
@@ -71,8 +100,44 @@ def create_app() -> Flask:
         except Exception:
             # Игнорируем ошибки при первом запуске, когда еще нет пользователей
             pass
+        
+        # Автоматическое создание супер-админа через переменные окружения
+        _create_super_admin_from_env()
 
     return app
+
+
+def _create_super_admin_from_env() -> None:
+    """Создает супер-администратора из переменных окружения при первом запуске."""
+    import os
+    
+    super_admin_username = os.environ.get("SUPER_ADMIN_USERNAME")
+    super_admin_email = os.environ.get("SUPER_ADMIN_EMAIL")
+    super_admin_password = os.environ.get("SUPER_ADMIN_PASSWORD")
+    
+    # Проверяем, есть ли уже супер-админ
+    if User.query.filter_by(is_super_admin=True).first():
+        return
+    
+    # Если все переменные заданы, создаем супер-админа
+    if super_admin_username and super_admin_email and super_admin_password:
+        # Проверяем, не существует ли уже пользователь
+        existing_user = User.query.filter(
+            (User.username == super_admin_username) | (User.email == super_admin_email)
+        ).first()
+        
+        if not existing_user:
+            admin = User(
+                username=super_admin_username,
+                email=super_admin_email,
+                is_admin=True,
+                is_super_admin=True
+            )
+            admin.set_password(super_admin_password)
+            db.session.add(admin)
+            db.session.commit()
+            admin.storage_path.mkdir(parents=True, exist_ok=True)
+            print(f"✅ Супер-администратор '{super_admin_username}' создан из переменных окружения.")
 
 
 def _configure_extensions(app: Flask) -> None:
@@ -119,8 +184,52 @@ def _configure_extensions(app: Flask) -> None:
 
 
 def _register_routes(app: Flask) -> None:
+    @app.route("/setup", methods=["GET", "POST"])
+    def setup():
+        """Страница первоначальной настройки для создания супер-администратора."""
+        # Проверяем, есть ли уже супер-админ
+        if User.query.filter_by(is_super_admin=True).first():
+            flash("Супер-администратор уже создан. Используйте форму входа.", "info")
+            return redirect(url_for("login"))
+        
+        if request.method == "POST":
+            username = request.form.get("username", "").strip()
+            email = request.form.get("email", "").strip().lower()
+            password = request.form.get("password", "")
+            confirm_password = request.form.get("confirm_password", "")
+            
+            if not username or not email or not password:
+                flash("Все поля обязательны для заполнения.", "danger")
+            elif password != confirm_password:
+                flash("Пароли не совпадают.", "danger")
+            elif len(password) < 6:
+                flash("Пароль должен содержать минимум 6 символов.", "danger")
+            elif User.query.filter_by(username=username).first():
+                flash("Имя пользователя уже занято.", "warning")
+            elif User.query.filter_by(email=email).first():
+                flash("Email уже зарегистрирован.", "warning")
+            else:
+                admin = User(
+                    username=username,
+                    email=email,
+                    is_admin=True,
+                    is_super_admin=True
+                )
+                admin.set_password(password)
+                db.session.add(admin)
+                db.session.commit()
+                admin.storage_path.mkdir(parents=True, exist_ok=True)
+                flash("Супер-администратор успешно создан! Теперь вы можете войти.", "success")
+                return redirect(url_for("login"))
+        
+        return render_template("setup.html")
+    
     @app.route("/")
     def index():
+        # Проверяем, есть ли супер-админ, если нет - перенаправляем на setup
+        if not User.query.filter_by(is_super_admin=True).first():
+            return redirect(url_for("setup"))
+        
         file_count = File.query.count()
         user_count = User.query.count()
         total_size = db.session.query(db.func.sum(File.file_size)).scalar() or 0
@@ -134,6 +243,10 @@ def _register_routes(app: Flask) -> None:
 
     @app.route("/register", methods=["GET", "POST"])
     def register():
+        # Если нет супер-админа, перенаправляем на setup
+        if not User.query.filter_by(is_super_admin=True).first():
+            return redirect(url_for("setup"))
+        
         if current_user.is_authenticated:
             return redirect(url_for("dashboard"))
 
@@ -164,6 +277,10 @@ def _register_routes(app: Flask) -> None:
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
+        # Если нет супер-админа, перенаправляем на setup
+        if not User.query.filter_by(is_super_admin=True).first():
+            return redirect(url_for("setup"))
+        
         if current_user.is_authenticated:
             return redirect(url_for("dashboard"))
 
@@ -198,8 +315,8 @@ def _register_routes(app: Flask) -> None:
         page = request.args.get("page", 1, type=int)
         per_page = 20
 
-        # Базовый запрос
-        query = current_user.files
+        # Базовый запрос - исключаем удаленные файлы
+        query = current_user.files.filter(File.is_deleted == False)
 
         # Поиск по имени файла
         if search_query:
@@ -249,9 +366,10 @@ def _register_routes(app: Flask) -> None:
         pagination = query.paginate(page=page, per_page=per_page, error_out=False)
         user_files = pagination.items
 
-        # Общий размер всех файлов пользователя
+        # Общий размер всех файлов пользователя (исключая удаленные)
         total_size = db.session.query(db.func.sum(File.file_size)).filter(
-            File.user_id == current_user.id
+            File.user_id == current_user.id,
+            File.is_deleted == False
         ).scalar() or 0
 
         return render_template(
@@ -339,6 +457,8 @@ def _register_routes(app: Flask) -> None:
         file_record = File.query.get_or_404(file_id)
         if file_record.owner != current_user:
             abort(403)
+        if file_record.is_deleted:
+            abort(404)
         return render_template("download.html", file=file_record)
 
     @app.route("/download/<int:file_id>")
@@ -347,6 +467,8 @@ def _register_routes(app: Flask) -> None:
         file_record = File.query.get_or_404(file_id)
         if file_record.owner != current_user:
             abort(403)
+        if file_record.is_deleted:
+            abort(404)
 
         file_record.download_count += 1
         db.session.commit()
@@ -364,6 +486,8 @@ def _register_routes(app: Flask) -> None:
         file_record = File.query.get_or_404(file_id)
         if file_record.owner != current_user:
             abort(403)
+        if file_record.is_deleted:
+            abort(404)
 
         if not file_record.mime_type or not file_record.mime_type.startswith("image/"):
             abort(404)
@@ -381,11 +505,15 @@ def _register_routes(app: Flask) -> None:
         file_record = File.query.get_or_404(file_id)
         if file_record.owner != current_user:
             abort(403)
+        
+        if file_record.is_deleted:
+            abort(404)
 
-        _remove_file_from_storage(file_record)
-        db.session.delete(file_record)
+        # Помечаем файл как удаленный вместо физического удаления
+        file_record.is_deleted = True
+        file_record.deleted_at = datetime.utcnow()
         db.session.commit()
-        flash("Файл удален.", "info")
+        flash("Файл перемещен в корзину.", "info")
         return redirect(url_for("dashboard"))
 
     @app.route("/files/bulk-delete", methods=["POST"])
@@ -395,7 +523,7 @@ def _register_routes(app: Flask) -> None:
         files_to_delete: list[File] = []
 
         if action == "delete_all":
-            files_to_delete = current_user.files.order_by(File.uploaded_at.desc()).all()
+            files_to_delete = current_user.files.filter(File.is_deleted == False).order_by(File.uploaded_at.desc()).all()
             if not files_to_delete:
                 flash("Нет файлов для удаления.", "info")
                 return redirect(url_for("dashboard"))
@@ -412,7 +540,7 @@ def _register_routes(app: Flask) -> None:
                 return redirect(url_for("dashboard"))
 
             files_to_delete = (
-                File.query.filter(File.id.in_(selected_ids), File.user_id == current_user.id)
+                File.query.filter(File.id.in_(selected_ids), File.user_id == current_user.id, File.is_deleted == False)
                 .order_by(File.uploaded_at.desc())
                 .all()
             )
@@ -423,16 +551,17 @@ def _register_routes(app: Flask) -> None:
 
         deleted_count = 0
         for file_record in files_to_delete:
-            _remove_file_from_storage(file_record)
-            db.session.delete(file_record)
-            deleted_count += 1
+            if not file_record.is_deleted:
+                file_record.is_deleted = True
+                file_record.deleted_at = datetime.utcnow()
+                deleted_count += 1
 
         db.session.commit()
 
         if action == "delete_all":
-            flash(f"Удалены все файлы ({deleted_count}).", "info")
+            flash(f"Файлы перемещены в корзину ({deleted_count}).", "info")
         else:
-            flash(f"Удалены выбранные файлы ({deleted_count}).", "info")
+            flash(f"Файлы перемещены в корзину ({deleted_count}).", "info")
 
         return redirect(url_for("dashboard"))
 
@@ -442,6 +571,8 @@ def _register_routes(app: Flask) -> None:
         file_record = File.query.get_or_404(file_id)
         if file_record.owner != current_user:
             abort(403)
+        if file_record.is_deleted:
+            abort(404)
 
         if file_record.is_public:
             file_record.is_public = False
@@ -457,12 +588,12 @@ def _register_routes(app: Flask) -> None:
 
     @app.route("/share/<token>")
     def share_view(token: str):
-        file_record = File.query.filter_by(share_token=token, is_public=True).first_or_404()
+        file_record = File.query.filter_by(share_token=token, is_public=True, is_deleted=False).first_or_404()
         return render_template("share.html", file=file_record)
 
     @app.route("/share/<token>/download")
     def share_download(token: str):
-        file_record = File.query.filter_by(share_token=token, is_public=True).first_or_404()
+        file_record = File.query.filter_by(share_token=token, is_public=True, is_deleted=False).first_or_404()
         
         file_record.download_count += 1
         db.session.commit()
@@ -473,6 +604,171 @@ def _register_routes(app: Flask) -> None:
             as_attachment=True,
             download_name=file_record.original_name,
         )
+    
+    @app.route("/trash")
+    @login_required
+    def trash():
+        """Страница корзины с удаленными файлами."""
+        search_query = request.args.get("search", "").strip()
+        sort_by = request.args.get("sort", "deleted_desc")
+        page = request.args.get("page", 1, type=int)
+        per_page = 20
+        
+        # Запрос удаленных файлов пользователя
+        query = current_user.files.filter(File.is_deleted == True)
+        
+        # Поиск по имени файла
+        if search_query:
+            query = query.filter(File.original_name.ilike(f"%{search_query}%"))
+        
+        # Сортировка
+        if sort_by == "name_asc":
+            query = query.order_by(File.original_name.asc())
+        elif sort_by == "name_desc":
+            query = query.order_by(File.original_name.desc())
+        elif sort_by == "size_asc":
+            query = query.order_by(File.file_size.asc())
+        elif sort_by == "size_desc":
+            query = query.order_by(File.file_size.desc())
+        elif sort_by == "deleted_asc":
+            query = query.order_by(File.deleted_at.asc())
+        else:  # deleted_desc по умолчанию
+            query = query.order_by(File.deleted_at.desc())
+        
+        # Пагинация
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        deleted_files = pagination.items
+        
+        return render_template(
+            "trash.html",
+            files=deleted_files,
+            pagination=pagination,
+            search_query=search_query,
+            sort_by=sort_by,
+        )
+    
+    @app.route("/trash/<int:file_id>/restore", methods=["POST"])
+    @login_required
+    def restore_file(file_id: int):
+        """Восстановление файла из корзины."""
+        file_record = File.query.get_or_404(file_id)
+        if file_record.owner != current_user:
+            abort(403)
+        if not file_record.is_deleted:
+            flash("Файл не находится в корзине.", "warning")
+            return redirect(url_for("trash"))
+        
+        file_record.is_deleted = False
+        file_record.deleted_at = None
+        db.session.commit()
+        flash(f"Файл '{file_record.original_name}' восстановлен.", "success")
+        return redirect(url_for("trash"))
+    
+    @app.route("/trash/<int:file_id>/permanent-delete", methods=["POST"])
+    @login_required
+    def permanent_delete(file_id: int):
+        """Окончательное удаление файла из корзины."""
+        file_record = File.query.get_or_404(file_id)
+        if file_record.owner != current_user:
+            abort(403)
+        if not file_record.is_deleted:
+            flash("Файл не находится в корзине.", "warning")
+            return redirect(url_for("trash"))
+        
+        original_name = file_record.original_name
+        _remove_file_from_storage(file_record)
+        db.session.delete(file_record)
+        db.session.commit()
+        flash(f"Файл '{original_name}' окончательно удален.", "info")
+        return redirect(url_for("trash"))
+    
+    @app.route("/trash/bulk-restore", methods=["POST"])
+    @login_required
+    def bulk_restore():
+        """Массовое восстановление файлов."""
+        selected_ids = request.form.getlist("file_ids")
+        if not selected_ids:
+            flash("Выберите хотя бы один файл.", "warning")
+            return redirect(url_for("trash"))
+        
+        try:
+            selected_ids = [int(file_id) for file_id in selected_ids]
+        except ValueError:
+            flash("Некорректный список файлов.", "danger")
+            return redirect(url_for("trash"))
+        
+        files_to_restore = (
+            File.query.filter(File.id.in_(selected_ids), File.user_id == current_user.id, File.is_deleted == True)
+            .all()
+        )
+        
+        if not files_to_restore:
+            flash("Не удалось найти выбранные файлы.", "warning")
+            return redirect(url_for("trash"))
+        
+        restored_count = 0
+        for file_record in files_to_restore:
+            file_record.is_deleted = False
+            file_record.deleted_at = None
+            restored_count += 1
+        
+        db.session.commit()
+        flash(f"Восстановлено файлов: {restored_count}.", "success")
+        return redirect(url_for("trash"))
+    
+    @app.route("/trash/bulk-permanent-delete", methods=["POST"])
+    @login_required
+    def bulk_permanent_delete():
+        """Массовое окончательное удаление файлов."""
+        selected_ids = request.form.getlist("file_ids")
+        if not selected_ids:
+            flash("Выберите хотя бы один файл.", "warning")
+            return redirect(url_for("trash"))
+        
+        try:
+            selected_ids = [int(file_id) for file_id in selected_ids]
+        except ValueError:
+            flash("Некорректный список файлов.", "danger")
+            return redirect(url_for("trash"))
+        
+        files_to_delete = (
+            File.query.filter(File.id.in_(selected_ids), File.user_id == current_user.id, File.is_deleted == True)
+            .all()
+        )
+        
+        if not files_to_delete:
+            flash("Не удалось найти выбранные файлы.", "warning")
+            return redirect(url_for("trash"))
+        
+        deleted_count = 0
+        for file_record in files_to_delete:
+            _remove_file_from_storage(file_record)
+            db.session.delete(file_record)
+            deleted_count += 1
+        
+        db.session.commit()
+        flash(f"Окончательно удалено файлов: {deleted_count}.", "info")
+        return redirect(url_for("trash"))
+    
+    @app.route("/trash/empty", methods=["POST"])
+    @login_required
+    def empty_trash():
+        """Очистка всей корзины."""
+        files_to_delete = current_user.files.filter(File.is_deleted == True).all()
+        
+        if not files_to_delete:
+            flash("Корзина уже пуста.", "info")
+            return redirect(url_for("trash"))
+        
+        deleted_count = 0
+        for file_record in files_to_delete:
+            _remove_file_from_storage(file_record)
+            db.session.delete(file_record)
+            deleted_count += 1
+        
+        db.session.commit()
+        flash(f"Корзина очищена. Удалено файлов: {deleted_count}.", "info")
+        return redirect(url_for("trash"))
 
     @app.route("/profile", methods=["GET", "POST"])
     @login_required
@@ -614,6 +910,11 @@ def _register_routes(app: Flask) -> None:
             flash("Вы не можете изменить свои права администратора.", "warning")
             return redirect(url_for("admin_users"))
         
+        # Защита супер-админа от снятия прав
+        if user.is_super_admin:
+            flash("Нельзя изменить права супер-администратора.", "danger")
+            return redirect(url_for("admin_users"))
+        
         user.is_admin = not user.is_admin
         db.session.commit()
         
@@ -630,6 +931,11 @@ def _register_routes(app: Flask) -> None:
         user = User.query.get_or_404(user_id)
         if user.id == current_user.id:
             flash("Вы не можете удалить свой аккаунт.", "warning")
+            return redirect(url_for("admin_users"))
+        
+        # Защита супер-админа от удаления
+        if user.is_super_admin:
+            flash("Нельзя удалить супер-администратора.", "danger")
             return redirect(url_for("admin_users"))
         
         username = user.username
@@ -732,29 +1038,67 @@ def _register_error_handlers(app: Flask) -> None:
 
 
 def _register_cli(app: Flask) -> None:
-    @app.cli.command("create-admin")
-    def create_admin() -> None:
-        """Создать администратора интерактивно."""
+    @app.cli.command("create-super-admin")
+    def create_super_admin() -> None:
+        """Создать супер-администратора интерактивно через CLI."""
         import getpass
-
+        
+        # Проверяем, есть ли уже супер-админ
+        existing_super_admin = User.query.filter_by(is_super_admin=True).first()
+        if existing_super_admin:
+            print(f"⚠️  Супер-администратор уже существует: {existing_super_admin.username}")
+            response = input("Создать еще одного? (y/N): ").strip().lower()
+            if response != 'y':
+                print("Отменено.")
+                return
+        
+        print("=" * 50)
+        print("Создание супер-администратора")
+        print("=" * 50)
+        
         username = input("Имя пользователя: ").strip()
-        email = input("Email: ").strip()
+        email = input("Email: ").strip().lower()
         password = getpass.getpass("Пароль: ")
+        confirm_password = getpass.getpass("Подтвердите пароль: ")
 
         if not username or not email or not password:
-            print("Все поля обязательны.")
+            print("\n❌ Ошибка: Все поля обязательны.")
+            return
+        
+        if password != confirm_password:
+            print("\n❌ Ошибка: Пароли не совпадают.")
+            return
+        
+        if len(password) < 6:
+            print("\n❌ Ошибка: Пароль должен содержать минимум 6 символов.")
             return
 
-        if User.query.filter((User.username == username) | (User.email == email)).first():
-            print("Пользователь с таким именем или email уже существует.")
+        existing_user = User.query.filter(
+            (User.username == username) | (User.email == email)
+        ).first()
+        
+        if existing_user:
+            print(f"\n❌ Ошибка: Пользователь с именем '{username}' или email '{email}' уже существует.")
             return
 
-        user = User(username=username, email=email, is_admin=True)
-        user.set_password(password)
-        db.session.add(user)
-        db.session.commit()
-        user.storage_path.mkdir(parents=True, exist_ok=True)
-        print(f"Администратор {username} создан.")
+        try:
+            user = User(username=username, email=email, is_admin=True, is_super_admin=True)
+            user.set_password(password)
+            db.session.add(user)
+            db.session.commit()
+            user.storage_path.mkdir(parents=True, exist_ok=True)
+            print(f"\n✅ Супер-администратор '{username}' успешно создан!")
+            print(f"   Email: {email}")
+            print(f"   Права: Супер-администратор (нельзя снять права или удалить)")
+        except Exception as e:
+            db.session.rollback()
+            print(f"\n❌ Ошибка при создании супер-администратора: {e}")
+    
+    @app.cli.command("create-admin")
+    def create_admin() -> None:
+        """Создать обычного администратора (устаревшая команда, используйте create-super-admin)."""
+        print("⚠️  Эта команда устарела. Используйте 'flask create-super-admin' для создания супер-администратора.")
+        print("   Или используйте веб-интерфейс: откройте /setup в браузере.")
 
 
 def _allowed_file(filename: str) -> bool:

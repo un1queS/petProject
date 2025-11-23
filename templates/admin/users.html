@@ -58,14 +58,17 @@
             <td>{{ "%.2f"|format(user.total_size / 1024 / 1024) }} MB</td>
             <td class="text-muted small">{{ user.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
             <td>
-              {% if user.is_admin %}
-              <span class="badge bg-warning text-dark">Да</span>
+              {% if user.is_super_admin %}
+              <span class="badge bg-danger">Админ</span>
+              {% elif user.is_admin %}
+              <span class="badge bg-warning text-dark">Админ</span>
               {% else %}
               <span class="badge bg-secondary">Нет</span>
               {% endif %}
             </td>
             <td>
               <div class="btn-group btn-group-sm" role="group">
+                {% if not user.is_super_admin %}
                 <form method="POST" action="{{ url_for('admin_toggle_admin', user_id=user.id) }}" class="d-inline">
                   <button type="submit" class="btn btn-outline-warning btn-sm" 
                           onclick="return confirm('{% if user.is_admin %}Лишить{% else %}Назначить{% endif %} права администратора?')">
@@ -82,6 +85,9 @@
                     <span class="material-symbols-outlined align-middle" style="font-size: 16px;">delete</span>
                   </button>
                 </form>
+                {% else %}
+                <span class="text-muted small">Защищен</span>
+                {% endif %}
               </div>
             </td>
           </tr>

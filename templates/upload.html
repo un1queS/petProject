@@ -10,9 +10,17 @@
         <h1 class="h3 mb-4">Загрузить файл(ы)</h1>
         <form method="post" enctype="multipart/form-data" class="upload-form" id="uploadForm">
           <div class="mb-3">
-            <label for="file" class="form-label">Выберите файл(ы)</label>
-            <input class="form-control form-control-lg" type="file" id="file" name="file" multiple required>
-            <div class="form-text">
+            <label for="file" class="form-label">Выберите файл(ы) или перетащите их сюда</label>
+            <div class="drop-zone" id="dropZone">
+              <div class="drop-zone-content">
+                <span class="material-symbols-outlined drop-zone-icon">cloud_upload</span>
+                <p class="drop-zone-text">Перетащите файлы сюда или <span class="drop-zone-link">выберите файлы</span></p>
+                <p class="drop-zone-hint text-muted small">Поддерживается загрузка нескольких файлов</p>
+              </div>
+              <input class="form-control form-control-lg d-none" type="file" id="file" name="file" multiple required>
+            </div>
+            <div id="fileList" class="mt-3"></div>
+            <div class="form-text mt-2">
               Разрешенные типы файлов: {{ config.ALLOWED_EXTENSIONS | sort | join(", ") }}. Максимальный размер: {{ (config.MAX_CONTENT_LENGTH / (1024 * 1024)) | int }} МБ. Вы можете выбрать несколько файлов одновременно.
             </div>
           </div>
@@ -41,14 +49,128 @@
 <script>
   document.addEventListener("DOMContentLoaded", function () {
     const form = document.getElementById("uploadForm");
-    if (!form) return;
-
+    const fileInput = document.getElementById("file");
+    const dropZone = document.getElementById("dropZone");
+    const fileList = document.getElementById("fileList");
     const progressWrapper = document.getElementById("uploadProgressWrapper");
     const progressBar = document.getElementById("uploadProgressBar");
     const statusText = document.getElementById("uploadStatusText");
+    
+    if (!form || !dropZone || !fileInput) return;
 
+    // Функция для форматирования размера файла
+    function formatFileSize(bytes) {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    }
+
+    // Функция для получения иконки файла
+    function getFileIcon(fileName) {
+      const ext = fileName.split('.').pop().toLowerCase();
+      if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) return 'image';
+      if (['mp4', 'avi', 'mov', 'wmv'].includes(ext)) return 'movie';
+      if (['mp3', 'wav', 'ogg'].includes(ext)) return 'music_note';
+      if (ext === 'pdf') return 'picture_as_pdf';
+      if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+      if (['doc', 'docx'].includes(ext)) return 'article';
+      if (['xls', 'xlsx'].includes(ext)) return 'table';
+      if (['ppt', 'pptx'].includes(ext)) return 'slideshow';
+      return 'insert_drive_file';
+    }
+
+    // Обновление списка файлов
+    function updateFileList() {
+      fileList.innerHTML = '';
+      if (fileInput.files.length === 0) return;
+
+      Array.from(fileInput.files).forEach((file, index) => {
+        const item = document.createElement('div');
+        item.className = 'file-list-item';
+        item.innerHTML = `
+          <span class="material-symbols-outlined file-list-item-icon">${getFileIcon(file.name)}</span>
+          <div class="file-list-item-info">
+            <div class="file-list-item-name" title="${file.name}">${file.name}</div>
+            <div class="file-list-item-size">${formatFileSize(file.size)}</div>
+          </div>
+          <button type="button" class="file-list-item-remove" data-index="${index}">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        `;
+        fileList.appendChild(item);
+      });
+
+      // Обработчики удаления файлов
+      fileList.querySelectorAll('.file-list-item-remove').forEach(btn => {
+        btn.addEventListener('click', function() {
+          const index = parseInt(this.getAttribute('data-index'));
+          const dt = new DataTransfer();
+          Array.from(fileInput.files).forEach((file, i) => {
+            if (i !== index) dt.items.add(file);
+          });
+          fileInput.files = dt.files;
+          updateFileList();
+        });
+      });
+    }
+
+    // Обработка выбора файлов через input
+    fileInput.addEventListener('change', function() {
+      updateFileList();
+    });
+
+    // Клик по drop zone
+    dropZone.addEventListener('click', function(e) {
+      if (e.target.closest('.file-list-item-remove')) return;
+      fileInput.click();
+    });
+
+    // Предотвращение стандартного поведения браузера
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropZone.addEventListener(eventName, preventDefaults, false);
+      document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    // Визуальная обратная связь
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropZone.addEventListener(eventName, function() {
+        dropZone.classList.add('drag-over');
+      }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropZone.addEventListener(eventName, function() {
+        dropZone.classList.remove('drag-over');
+      }, false);
+    });
+
+    // Обработка drop
+    dropZone.addEventListener('drop', function(e) {
+      const dt = e.dataTransfer;
+      const files = dt.files;
+      
+      if (files.length > 0) {
+        // Если уже есть файлы, добавляем новые
+        const dt2 = new DataTransfer();
+        Array.from(fileInput.files).forEach(file => dt2.items.add(file));
+        Array.from(files).forEach(file => dt2.items.add(file));
+        fileInput.files = dt2.files;
+        updateFileList();
+      }
+    }, false);
+
+    // Обработка отправки формы
     form.addEventListener("submit", function (event) {
-      if (!form.file.files.length) {
+      if (!fileInput.files.length) {
+        event.preventDefault();
+        alert("Пожалуйста, выберите хотя бы один файл для загрузки.");
         return;
       }
 

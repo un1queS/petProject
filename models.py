@@ -19,6 +19,7 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
+    is_super_admin = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     files = db.relationship(
@@ -42,6 +43,11 @@ class User(UserMixin, db.Model):
 
     def check_password(self, password: str) -> bool:
         return check_password_hash(self.password_hash, password)
+    
+    @property
+    def is_administrator(self) -> bool:
+        """Возвращает True, если пользователь является администратором или супер-администратором."""
+        return self.is_admin or self.is_super_admin
 
 
 class File(db.Model):
@@ -57,6 +63,8 @@ class File(db.Model):
     description = db.Column(db.Text)
     share_token = db.Column(db.String(64), unique=True, nullable=True, index=True)
     is_public = db.Column(db.Boolean, default=False, nullable=False)
+    is_deleted = db.Column(db.Boolean, default=False, nullable=False)
+    deleted_at = db.Column(db.DateTime, nullable=True)
 
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     owner = db.relationship("User", back_populates="files")
