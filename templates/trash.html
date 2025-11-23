@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}Корзина · {{ config.SITE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+  <div>
+    <h1 class="h3 mb-1">
+      <span class="material-symbols-outlined align-middle text-danger">delete</span>
+      Корзина
+    </h1>
+    <p class="text-muted mb-0">
+      {% if pagination %}
+        Показано {{ pagination.items|length }} из {{ pagination.total }} удаленных файлов
+      {% else %}
+        Удаленных файлов: {{ files|length }}
+      {% endif %}
+    </p>
+  </div>
+  <form method="POST" action="{{ url_for('empty_trash') }}" class="d-inline" onsubmit="return confirm('Очистить всю корзину? Это действие нельзя отменить!');">
+    <button type="submit" class="btn btn-danger">
+      <span class="material-symbols-outlined align-middle">delete_forever</span>
+      Очистить корзину
+    </button>
+  </form>
+</div>
+
+<!-- Поиск и фильтры -->
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <form method="get" action="{{ url_for('trash') }}" class="row g-3">
+      <div class="col-md-8">
+        <label for="search" class="form-label small">Поиск по имени</label>
+        <input type="text" class="form-control" id="search" name="search" value="{{ search_query }}" placeholder="Введите название файла...">
+      </div>
+      <div class="col-md-4">
+        <label for="sort" class="form-label small">Сортировка</label>
+        <select class="form-select" id="sort" name="sort">
+          <option value="deleted_desc" {% if sort_by == 'deleted_desc' %}selected{% endif %}>Дата удаления (новые)</option>
+          <option value="deleted_asc" {% if sort_by == 'deleted_asc' %}selected{% endif %}>Дата удаления (старые)</option>
+          <option value="name_asc" {% if sort_by == 'name_asc' %}selected{% endif %}>Имя (А-Я)</option>
+          <option value="name_desc" {% if sort_by == 'name_desc' %}selected{% endif %}>Имя (Я-А)</option>
+          <option value="size_asc" {% if sort_by == 'size_asc' %}selected{% endif %}>Размер (маленькие)</option>
+          <option value="size_desc" {% if sort_by == 'size_desc' %}selected{% endif %}>Размер (большие)</option>
+        </select>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if files %}
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+    <div class="text-muted small">Выберите файлы для восстановления или окончательного удаления.</div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-success" id="restoreSelectedBtn" disabled>Восстановить выбранные</button>
+      <button type="button" class="btn btn-danger" id="deleteSelectedBtn" disabled>Удалить навсегда</button>
+    </div>
+  </div>
+  <form id="bulkActionForm" method="post" action="" style="display: none;">
+    <input type="hidden" name="action" id="bulkAction" value="">
+  </form>
+  <div class="table-responsive shadow-sm rounded-4">
+    <table class="table table-hover align-middle mb-0">
+    <thead class="table-light">
+      <tr>
+        <th scope="col" style="width: 40px;">
+          <input class="form-check-input" type="checkbox" id="selectAllFiles" aria-label="Выбрать все">
+        </th>
+        <th scope="col" style="width: 110px;">Файл</th>
+        <th scope="col">Имя</th>
+        <th scope="col">Загружено</th>
+        <th scope="col">Удалено</th>
+        <th scope="col">Размер</th>
+        <th scope="col" class="text-end">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for file in files %}
+        <tr class="{% if file.deleted_at %}opacity-75{% endif %}">
+          <td>
+            <input class="form-check-input file-checkbox" type="checkbox" data-file-id="{{ file.id }}" aria-label="Выбрать {{ file.original_name }}">
+          </td>
+          <td>
+            <div class="file-preview {% if file.mime_type and file.mime_type.startswith('image/') %}file-preview-image{% endif %}">
+              {% if file.mime_type and file.mime_type.startswith("image/") %}
+                <img src="{{ url_for('preview_file', file_id=file.id) }}" alt="Превью {{ file.original_name }}">
+                <span class="material-symbols-outlined file-preview-label">image</span>
+              {% else %}
+                <span class="material-symbols-outlined file-preview-icon">{{ preview_icon(file.mime_type) }}</span>
+              {% endif %}
+            </div>
+          </td>
+          <td>
+            <div class="fw-semibold">{{ file.original_name }}</div>
+            {% if file.description %}
+              <div class="text-muted small">{{ file.description }}</div>
+            {% endif %}
+          </td>
+          <td class="text-muted small">{{ file.uploaded_at.strftime("%d %b %Y %H:%M") }}</td>
+          <td class="text-danger small">{{ file.deleted_at.strftime("%d %b %Y %H:%M") if file.deleted_at else "—" }}</td>
+          <td>{{ (file.file_size / (1024 * 1024)) | round(2) }} MB</td>
+          <td class="text-end">
+            <div class="btn-group btn-group-sm" role="group">
+              <form method="POST" action="{{ url_for('restore_file', file_id=file.id) }}" class="d-inline">
+                <button type="submit" class="btn btn-success" title="Восстановить">
+                  <span class="material-symbols-outlined align-middle" style="font-size: 16px;">restore</span>
+                </button>
+              </form>
+              <form method="POST" action="{{ url_for('permanent_delete', file_id=file.id) }}" class="d-inline" onsubmit="return confirm('Окончательно удалить файл {{ file.original_name }}? Это действие нельзя отменить!');">
+                <button type="submit" class="btn btn-danger" title="Удалить навсегда">
+                  <span class="material-symbols-outlined align-middle" style="font-size: 16px;">delete_forever</span>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <!-- Пагинация -->
+  {% if pagination and pagination.pages > 1 %}
+    <nav aria-label="Навигация по страницам" class="mt-4">
+      <ul class="pagination justify-content-center">
+        <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+          <a class="page-link" href="{{ url_for('trash', page=pagination.prev_num, search=search_query, sort=sort_by) if pagination.has_prev else '#' }}">Предыдущая</a>
+        </li>
+        {% for page_num in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+          {% if page_num %}
+            {% if page_num == pagination.page %}
+              <li class="page-item active"><span class="page-link">{{ page_num }}</span></li>
+            {% else %}
+              <li class="page-item"><a class="page-link" href="{{ url_for('trash', page=page_num, search=search_query, sort=sort_by) }}">{{ page_num }}</a></li>
+            {% endif %}
+          {% else %}
+            <li class="page-item disabled"><span class="page-link">…</span></li>
+          {% endif %}
+        {% endfor %}
+        <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+          <a class="page-link" href="{{ url_for('trash', page=pagination.next_num, search=search_query, sort=sort_by) if pagination.has_next else '#' }}">Следующая</a>
+        </li>
+      </ul>
+    </nav>
+  {% endif %}
+{% else %}
+  <div class="text-center py-5 border rounded-4">
+    <span class="material-symbols-outlined text-muted" style="font-size: 64px;">delete</span>
+    <p class="lead mb-1 mt-3">Корзина пуста</p>
+    <p class="text-muted mb-4">Удаленные файлы будут отображаться здесь.</p>
+    <a class="btn btn-primary" href="{{ url_for('dashboard') }}">Вернуться к файлам</a>
+  </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const bulkForm = document.getElementById("bulkActionForm");
+    if (!bulkForm) return;
+
+    const selectAll = document.getElementById("selectAllFiles");
+    const checkboxes = Array.from(document.querySelectorAll(".file-checkbox"));
+    const restoreSelectedBtn = document.getElementById("restoreSelectedBtn");
+    const deleteSelectedBtn = document.getElementById("deleteSelectedBtn");
+    const actionInput = document.getElementById("bulkAction");
+
+    const updateState = () => {
+      const checked = checkboxes.filter((cb) => cb.checked);
+      restoreSelectedBtn.disabled = checked.length === 0;
+      deleteSelectedBtn.disabled = checked.length === 0;
+      if (selectAll) {
+        selectAll.checked = checked.length === checkboxes.length && checkboxes.length > 0;
+        selectAll.indeterminate = checked.length > 0 && checked.length < checkboxes.length;
+      }
+    };
+
+    checkboxes.forEach((cb) => cb.addEventListener("change", updateState));
+
+    if (selectAll) {
+      selectAll.addEventListener("change", () => {
+        checkboxes.forEach((cb) => {
+          cb.checked = selectAll.checked;
+        });
+        updateState();
+      });
+    }
+
+    restoreSelectedBtn.addEventListener("click", () => {
+      const selectedCount = checkboxes.filter((cb) => cb.checked).length;
+      if (!selectedCount) return;
+      if (!confirm(`Восстановить выбранные файлы (${selectedCount})?`)) return;
+      
+      // Создаем скрытые input для выбранных файлов
+      bulkForm.innerHTML = '<input type="hidden" name="action" id="bulkAction" value="">';
+      checkboxes.forEach((cb) => {
+        if (cb.checked) {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'file_ids';
+          input.value = cb.getAttribute('data-file-id');
+          bulkForm.appendChild(input);
+        }
+      });
+      
+      bulkForm.action = "{{ url_for('bulk_restore') }}";
+      bulkForm.submit();
+    });
+
+    deleteSelectedBtn.addEventListener("click", () => {
+      const selectedCount = checkboxes.filter((cb) => cb.checked).length;
+      if (!selectedCount) return;
+      if (!confirm(`Окончательно удалить выбранные файлы (${selectedCount})? Это действие нельзя отменить!`)) return;
+      
+      // Создаем скрытые input для выбранных файлов
+      bulkForm.innerHTML = '<input type="hidden" name="action" id="bulkAction" value="">';
+      checkboxes.forEach((cb) => {
+        if (cb.checked) {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'file_ids';
+          input.value = cb.getAttribute('data-file-id');
+          bulkForm.appendChild(input);
+        }
+      });
+      
+      bulkForm.action = "{{ url_for('bulk_permanent_delete') }}";
+      bulkForm.submit();
+    });
+  });
+</script>
+{% endblock %}
+
