@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}Загрузить файл · {{ config.SITE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-5">
+        <h1 class="h3 mb-4">Загрузить файл(ы)</h1>
+        <form method="post" enctype="multipart/form-data" class="upload-form" id="uploadForm">
+          <div class="mb-3">
+            <label for="file" class="form-label">Выберите файл(ы)</label>
+            <input class="form-control form-control-lg" type="file" id="file" name="file" multiple required>
+            <div class="form-text">
+              Разрешенные типы файлов: {{ config.ALLOWED_EXTENSIONS | sort | join(", ") }}. Максимальный размер: {{ (config.MAX_CONTENT_LENGTH / (1024 * 1024)) | int }} МБ. Вы можете выбрать несколько файлов одновременно.
+            </div>
+          </div>
+          <div class="mb-3">
+            <label for="description" class="form-label">Описание <span class="text-muted small">(необязательно)</span></label>
+            <textarea class="form-control" id="description" name="description" rows="3" placeholder="Добавьте детали об этом файле или заметки по использованию."></textarea>
+          </div>
+          <div class="d-flex gap-3 flex-wrap align-items-center">
+            <button class="btn btn-primary px-4" type="submit">Загрузить</button>
+            <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Отмена</a>
+            <div class="flex-grow-1 w-100 w-md-auto d-none" id="uploadProgressWrapper">
+              <div class="progress" role="progressbar" aria-label="Прогресс загрузки">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" id="uploadProgressBar" style="width: 0%">0%</div>
+              </div>
+              <div class="small text-muted mt-2" id="uploadStatusText">Подготовка к загрузке…</div>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const form = document.getElementById("uploadForm");
+    if (!form) return;
+
+    const progressWrapper = document.getElementById("uploadProgressWrapper");
+    const progressBar = document.getElementById("uploadProgressBar");
+    const statusText = document.getElementById("uploadStatusText");
+
+    form.addEventListener("submit", function (event) {
+      if (!form.file.files.length) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const formData = new FormData(form);
+      const xhr = new XMLHttpRequest();
+
+      xhr.open("POST", form.action || window.location.pathname, true);
+      xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+
+      progressWrapper.classList.remove("d-none");
+      progressBar.style.width = "0%";
+      progressBar.textContent = "0%";
+      progressBar.setAttribute("aria-valuenow", "0");
+      statusText.textContent = "Загрузка началась…";
+
+      xhr.upload.addEventListener("progress", function (e) {
+        if (!e.lengthComputable) return;
+        const percent = Math.round((e.loaded / e.total) * 100);
+        progressBar.style.width = percent + "%";
+        progressBar.textContent = percent + "%";
+        progressBar.setAttribute("aria-valuenow", percent.toString());
+      });
+
+      xhr.addEventListener("load", function () {
+        if (xhr.status >= 200 && xhr.status < 400) {
+          statusText.textContent = "Загрузка завершена, перенаправляем…";
+          try {
+            const response = JSON.parse(xhr.responseText);
+            if (response.redirect) {
+              window.location.href = response.redirect;
+              return;
+            }
+          } catch (_) {
+            // Если ответ не JSON — просто переходим на дашборд
+          }
+          window.location.href = "{{ url_for('dashboard') }}";
+        } else {
+          statusText.textContent = "Ошибка сервера. Попробуйте еще раз.";
+        }
+      });
+
+      xhr.addEventListener("error", function () {
+        statusText.textContent = "Ошибка сети. Проверьте подключение и повторите попытку.";
+      });
+
+      xhr.send(formData);
+    });
+  });
+</script>
+{% endblock %}
+

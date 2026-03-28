@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Вход · {{ config.SITE_NAME }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-5">
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-5">
+        <h1 class="h4 mb-4 text-center">Добро пожаловать</h1>
+        <form method="post" novalidate>
+          <div class="mb-3">
+            <label class="form-label" for="username">Имя пользователя</label>
+            <input class="form-control form-control-lg" id="username" name="username" type="text" required autofocus>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="password">Пароль</label>
+            <input class="form-control form-control-lg" id="password" name="password" type="password" required>
+          </div>
+          <div class="d-grid">
+            <button class="btn btn-primary btn-lg" type="submit">Войти</button>
+          </div>
+        </form>
+        <p class="text-center text-muted mt-4 mb-0">
+          Нужен аккаунт?
+          <a href="{{ url_for('register') }}">Создать</a>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+

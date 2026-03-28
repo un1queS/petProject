@@ -39,7 +39,7 @@
 ### 1. Клонирование репозитория
 
 ```bash
-git clone https://github.com/yourusername/file_hosting.git
+git clone https://github.com/un1queS/file_hosting.git
 cd file_hosting
 ```
 

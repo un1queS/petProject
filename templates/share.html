@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}{{ file.original_name }} · Публичная ссылка{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-5 text-center">
+        <h1 class="h3 mb-4">{{ file.original_name }}</h1>
+        
+        <div class="mb-4">
+          <dl class="row text-start">
+            <dt class="col-sm-4">Размер файла</dt>
+            <dd class="col-sm-8">{{ (file.file_size / 1024) | round(1) }} КБ</dd>
+            
+            <dt class="col-sm-4">Тип</dt>
+            <dd class="col-sm-8">{{ file.mime_type or "Неизвестно" }}</dd>
+            
+            <dt class="col-sm-4">Загружено</dt>
+            <dd class="col-sm-8">{{ file.uploaded_at.strftime("%d %b %Y %H:%M") }}</dd>
+            
+            {% if file.description %}
+            <dt class="col-sm-4">Описание</dt>
+            <dd class="col-sm-8">{{ file.description }}</dd>
+            {% endif %}
+          </dl>
+        </div>
+
+        <div class="d-flex gap-3 justify-content-center">
+          <a class="btn btn-primary btn-lg" href="{{ url_for('share_download', token=file.share_token) }}">Скачать файл</a>
+        </div>
+        
+        <div class="alert alert-info mt-4">
+          <small>Этот файл был предоставлен через публичную ссылку.</small>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
