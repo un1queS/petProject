@@ -16,7 +16,7 @@ class Config:
         or f"sqlite:///{(INSTANCE_DIR / 'database.db').as_posix()}"
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    MAX_CONTENT_LENGTH = 1024 * 1024 * 1024
+    MAX_CONTENT_LENGTH = 10 * 1024 * 1024 * 1024
     SITE_NAME = "CloudSafe"
 
     ALLOWED_EXTENSIONS = {

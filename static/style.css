@@ -146,3 +146,111 @@ footer {
   color: var(--gradient-start);
 }
 
+
+.drop-zone {
+  border: 2px dashed #cbd5e1;
+  border-radius: 1rem;
+  padding: 3rem 2rem;
+  text-align: center;
+  background: #f8fafc;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  position: relative;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.drop-zone:hover {
+  border-color: var(--gradient-start);
+  background: #f1f5f9;
+}
+
+.drop-zone.drag-over {
+  border-color: var(--gradient-start);
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.05), rgba(6, 182, 212, 0.05));
+  transform: scale(1.02);
+}
+
+.drop-zone-content {
+  width: 100%;
+}
+
+.drop-zone-icon {
+  font-size: 4rem;
+  color: var(--gradient-start);
+  margin-bottom: 1rem;
+  display: block;
+}
+
+.drop-zone-text {
+  font-size: 1.1rem;
+  color: #334155;
+  margin-bottom: 0.5rem;
+}
+
+.drop-zone-link {
+  color: var(--gradient-start);
+  text-decoration: underline;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.drop-zone-hint {
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+}
+
+/* File List */
+.file-list-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem;
+  background: #f8fafc;
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid #e2e8f0;
+}
+
+.file-list-item-icon {
+  font-size: 2rem;
+  color: var(--gradient-start);
+}
+
+.file-list-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-list-item-name {
+  font-weight: 500;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-list-item-size {
+  font-size: 0.875rem;
+  color: #64748b;
+}
+
+.file-list-item-remove {
+  background: none;
+  border: none;
+  color: #ef4444;
+  cursor: pointer;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.25rem;
+  transition: background 0.2s;
+}
+
+.file-list-item-remove:hover {
+  background: #fee2e2;
+}
+
